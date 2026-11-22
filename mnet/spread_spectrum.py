@@ -82,10 +82,11 @@ if __name__ == "__main__":
     _data = np.random.randint(0, 255, size=1 << 12, dtype=np.uint32)
     with open("test.csv", "w") as f:
         print("length,", "n_codes,", "weights/byte,", "ber,", "gain,", "dB,", file=f)
-        for code_length in [1024]:  # [32, 64, 128, 256, 512, 1024, 2048]:
-            for number_of_codes in [8]:  # [4, 8, 16, 32, 64, 128, 256, 512, 1024]:
+        for code_length in [32, 64, 128, 256, 512, 1024, 2048]:
+            for number_of_codes in [4, 8, 16, 32, 64, 128, 256, 512, 1024]:
                 ber, weights_per_byte, integration_gain = unit_test(
                     _data, n_codes=number_of_codes, code_length=code_length
                 )
                 r = f"{code_length}, {number_of_codes}, {weights_per_byte}, {ber}, {integration_gain}, {20 * np.log10(integration_gain)}"
-                print(r)
+                f.write(r)
+                f.write("\n")

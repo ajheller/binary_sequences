@@ -38,7 +38,7 @@ def gold_sequence_set(ps0, ps1, n, balanced_only=True):
             f"{len(g)}/{i} balanced sequences found. Try a different preferred pair."
         )
 
-    return np.row_stack(g)
+    return np.vstack(g)
 
 
 def gold_codec(N, size):
@@ -48,7 +48,7 @@ def gold_codec(N, size):
 
 
 def cyclic_xcorr(s1, s2):
-    return ifft(fft(s1) * fft(s2).conj)
+    return ifft(fft(s1) * fft(s2).conj())
 
 
 def cyclic_xcorr2(s1, s2):

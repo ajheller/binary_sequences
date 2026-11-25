@@ -1,0 +1,170 @@
+Gold modem V1.0: configurable pilots, frame version 3
+==================================================
+
+V1.0 is the software release label. The on-air format remains version 3;
+renaming the module does not change the waveform or packet layout. Update
+Python imports and launch commands to mary_gold_ssb_modem_v1. Earlier format-3
+recordings remain compatible. Keep the existing v4 backups as historical copies.
+
+V1 scope: offline WAV transmit/receive, AWGN simulation, checked Gold families,
+CRC-protected framing, optional pilots and tracking, timing, and SNR sweeps.
+No FEC, Watterson fading, soundcard streaming, or Hamlib/PTT control yet.
+
+Before the next feature phase, record a baseline over-the-air session using
+known payloads, both code lengths, and matched pilot-on/off settings. Preserve
+received WAVs plus frequency, radio/filter settings, soundcard levels, payload,
+and configuration. Measure CRC packet success and decoding real-time factor.
+Use existing station PTT controls; this release does not key or unkey a radio.
+
+Configuration near the top of mary_gold_ssb_modem_v1.py:
+
+PILOT_MODE = "off"             # off / periodic / continuous
+PILOT_POWER_FRACTION = 0.10    # continuous nominal pilot component power
+PILOT_INTERVAL = 8             # periodic data symbols between bursts
+PILOT_BURST_LENGTH = 1         # consecutive pilot symbols per burst
+PILOT_TRACKING = True          # receiver-local tracking switch
+
+Power is a whole percentage from 1% through 50%. Periodic interval is 1..255,
+and burst length is 1..16. Inactive parameters are ignored on the wire.
+Defaults leave pilots off for baseline comparisons. Suggested experiments:
+continuous power 0.05, 0.10, 0.20; periodic intervals 4, 8, 16.
+No optimal setting for HF fading is claimed.
+
+The preamble always consists of four repetitions of m1. Payload pilots use m2,
+the other preferred-pair m-sequence. Both are excluded from data symbols. The
+former m2 data slot (symbol zero) now uses m1 * roll(m2, 15); symbols 1..15
+retain product shifts 0..14. There is no pilot transmission between packets. The header always uses
+ordinary data codes without added pilots. Only the payload and its CRC use the
+selected pilot mode. A receiver reads waveform settings from the checked header;
+its local PILOT_MODE/POWER/INTERVAL/BURST settings do not need to match the sender.
+Code length, sample/chip rate, and codebook still must match.
+
+Programmatic use:
+  cfg = PilotConfig("continuous", power_fraction=0.10)
+  audio, before, after = modulate_packet(payload, preamble, codebook, rrc,
+                                        pilot_config=cfg)
+  result = demodulate_packet(audio, preamble, codebook, rrc,
+                            return_details=True, pilot_tracking=True)
+  result.payload is None on rejection; b"" means a valid empty packet.
+  result.pilot_config, pilot_observations, tracking_updates, final_vfo_hz,
+  and timing_offset_samples provide diagnostics. vfo_hz remains the initial
+  acquisition estimate. Use result.ok, not payload truthiness.
+
+modulate_packet(..., return_details=True) returns TransmitResult containing
+waveform, PAPR, configuration, pilot/data symbol counts, measured composite
+chip power before normalization, and active audio mean-square power after CFR
+and final file scaling. The default three-value return is unchanged.
+
+Pilot modes
+-----------
+Off: no pilots after the preamble.
+Periodic: insert a burst after each complete interval of body data symbols
+when another data symbol follows. No initial or trailing pilot burst. The
+payload CRC is included in the body schedule. Pilots use m2 at full symbol power.
+Continuous: add sqrt(p)*m2 to sqrt(1-p)*data for every body symbol. Normalize
+each composite to unit mean-square chip power, accounting for the nonzero
+pilot/data cross term. RX uses the identical composite templates. There is no
+pilot cancellation. The nominal component ratio is not an independently
+measurable share of the final composite power, particularly after CFR.
+
+For periodic mode, steady burst-start spacing is (interval+burst_length)*N/
+CHIP_RATE seconds. Within a burst, observations are one symbol apart. For a
+127-chip code with interval 8, burst 1, spacing is 714.4 ms. Short packets may
+have no periodic pilots. Continuous observations occur every N/CHIP_RATE
+seconds (79.4 ms at N=127, 319.4 ms at N=511).
+
+Power and comparison
+--------------------
+All modes use unit chip power per emitted symbol. Final WAVs remain peak scaled
+to 0.8, so waveform-dependent crest factor can change actual average audio
+power. The demo prints measured active audio power after CFR/scaling. The AWGN
+channel bases SNR on each waveform's measured active power. Comparisons across
+modes must still account for periodic airtime overhead and header overhead;
+identical SNR is not identical energy per information bit. No equal-throughput
+pilot grid has been implemented yet.
+
+Tracking and acquisition
+------------------------
+Acquisition considers multiple preamble correlation peaks and checks the common
+header marker and CRC before trusting its length or pilot settings. It continues
+past failed candidates, accepting a packet only after its full CRC passes. This
+avoids treating a stronger repeated payload pilot as the unique packet start.
+The function returns one packet, not a list or live stream.
+
+Pilot-assisted tracking uses normalized m2 correlations over each pilot-bearing
+symbol, searches +/-2 samples around current timing and +/-12 Hz around current
+frequency (also bounded by max_doppler_hz), and applies a 0.5 frequency update.
+Confidence threshold is max(8/N, 0.06) for periodic pilots and max(8/N, 0.4*p)
+for continuous pilots. Low-confidence observations do not update the tracker.
+The receiver can disable tracking while retaining correct pilot-aware symbol
+mapping. Weak/noisy pilots may give few or no updates. No channel equalizer,
+pilot cancellation, or Watterson fading model is included yet.
+
+These thresholds are experimental AWGN baselines, not calibrated HF false-alarm
+bounds. Rapid fading within a code interval or large timing/frequency jumps can
+exceed tracking capability. CRC reduces random undetected errors but does not
+provide authentication or FEC.
+
+Wire format (v3, incompatible with v2, v1 and old length-only packets)
+---------------------------------------------------------------
+All bytes are sent high nibble first using 16-ary symbols.
+Header body, 8 bytes:
+  4D 47 03 | uint8 payload length | mode | power percent | interval | burst
+Mode 0/off: last three fields zero.
+Mode 1/periodic: power zero, interval 1..255, burst 1..16.
+Mode 2/continuous: power 1..50, interval and burst zero.
+Append a 4-byte big-endian zlib CRC-32 over those 8 bytes.
+Then send 0..255 payload bytes and a 4-byte big-endian zlib CRC-32 over the
+complete 12-byte header plus payload. Apply the selected pilot mapping to
+payload + trailer only. Both CRCs use zlib CRC-32 (CBF43926 for "123456789").
+Reserved/invalid configurations and corrupted header CRCs are rejected.
+
+Baseline behavior retained
+--------------------------
+Supported preferred Gold pairs: degree 7 (127 chips) and degree 9
+(511 chips, current default). Degree 8 is rejected. Reference:
+https://www.mathworks.com/help/comm/ref/goldsequencegenerator.html
+Generation validates m-sequence autocorrelation, preferred pair cross-correlation,
+and code uniqueness. Transmit pulse shaping emits the full FIR convolution.
+TX WAV is PCM16; simulated RX WAV is unclipped float32. Float amplitudes are
+preserved on load; integer PCM is scaled by dtype.
+
+Timing reports wall-clock compute time, excluding WAV I/O/channel simulation.
+RTF=compute seconds/audio seconds; below one is faster than real time. Audio
+includes silence/tails. Sweeps report aggregate, average, and worst timings.
+These are offline batch throughput measurements, not streaming latency.
+
+Sweep Packet OK requires CRC acceptance and exact transmitted payload agreement.
+Raw BER is conditional on complete candidates with the expected payload length,
+including CRC failures; BER bits gives its denominator. NaN means no eligible
+bits. Rejected headers/acquisition failures count against packet success.
+
+Validation
+----------
+Run from this directory:
+  python3 -m unittest test_mary_gold_ssb_modem_v1 test_pilot_modes -v
+
+Tests cover both code families, CRC bit flips and length limits, full pulse tail,
+maximum payload, noise/tone/silence/truncation rejection, WAV formats, all pilot
+modes at both lengths, pilot/header configuration validation, composite power,
+stronger false preamble rejection, offset AWGN, tracking disabled, a 10 Hz/s
+frequency ramp, and gradual sample-timing drift. These are simulation checks;
+over-the-air fading/clock behavior still needs measurement.
+
+Payload throughput and goodput
+-----------------------------
+The SNR table and single WAV demo report:
+  Payload bps = total attempted payload bits / total transmitted WAV seconds.
+  Goodput bps = CRC-accepted, exactly matching payload bits / that same time.
+Rejected packets contribute zero delivered bits but their full transmit time.
+This includes preamble, header, CRC, periodic pilots, filter tail, and the WAV's
+leading/trailing silence. Continuous-pilot power affects success probability,
+not symbol count. Neither metric includes encoding/decoding compute time,
+receiver-only simulated delay, ACKs, additional radio turnaround, or retries
+beyond the actual attempted packets. These are simulated offered payload rate
+and measured payload goodput, not the uncoded symbol bit rate. Empty payloads
+produce zero bps; a sweep with no attempts reports NaN.
+Check rate accounting with: python3 -m unittest test_modem_goodput -v
+
+Release tag: V1-Code3 (software V1.0, wire format 3).
+Tests explicitly select their code lengths; the release default is 511 chips.
